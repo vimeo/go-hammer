@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-    "github.com/bmizerany/perks/quantile"
+	"github.com/bmizerany/perks/quantile"
 
 	"gopkg.in/yaml.v2"
 )
@@ -23,13 +23,14 @@ type Config struct {
 }
 
 type Group struct {
-	Name     string
-	Threads  int
-	Backlog  int
-	QPS      float64
-	URLs     []string
-	Headers  map[string][]string
-	ReadBody bool
+	Name      string
+	Threads   int
+	Backlog   int
+	QPS       float64
+	URLs      []string
+	Headers   map[string][]string
+	ReadBody  bool
+	LogErrors bool
 }
 
 type Result struct {
@@ -53,7 +54,20 @@ func LoadConfig() (config Config, err error) {
 }
 
 func SendRequests(group Group, requests <-chan *http.Request, results chan<- Result, wg *sync.WaitGroup) {
-    defer wg.Done()
+	defer wg.Done()
+	/*    client := &http.Client{
+	      Transport: &http.Transport{
+	          Proxy: http.ProxyFromEnvironment,
+	          Dial: (&reuseport.Dialer{
+	              D: net.Dialer{
+	                  Timeout: 5 * time.Second,
+	                  KeepAlive: 5 * time.Second,
+	              },
+	          }).Dial,
+	          TLSHandshakeTimeout: 10 * time.Second,
+	      },
+	  }*/
+
 	client := &http.Client{}
 
 	for req := range requests {
@@ -63,12 +77,23 @@ func SendRequests(group Group, requests <-chan *http.Request, results chan<- Res
 		result.GotHeaders = time.Now()
 		if err != nil {
 			result.Status = 499
-            result.GotBody = result.GotHeaders
+			result.GotBody = result.GotHeaders
+			log.Println(err)
 		} else {
 			result.Status = res.StatusCode
-			if group.ReadBody {
+			if result.Status >= 400 {
+				if group.LogErrors {
+					logOut, err := ioutil.TempFile(".", "error.log.")
+					if err == nil {
+						res.Write(logOut)
+					} else {
+						log.Printf("%s writing error log", err.Error())
+					}
+				}
+				log.Printf("Got status %s for %s\n", res.Status, req.URL.String())
+			} else if group.ReadBody {
 				io.Copy(ioutil.Discard, res.Body)
-                result.GotBody = time.Now()
+				result.GotBody = time.Now()
 			} else {
 				res.Body.Close()
 			}
@@ -78,15 +103,15 @@ func SendRequests(group Group, requests <-chan *http.Request, results chan<- Res
 }
 
 func CollectResults(group Group, results <-chan Result, wg *sync.WaitGroup) {
-    defer wg.Done()
+	defer wg.Done()
 
 	var firstStart, lastStart time.Time
 	var timeinit bool
 	statuses := make(map[int]int)
-    headerStats := BasicStats{}
-    bodyStats := BasicStats{}
-    headerQuantile := quantile.NewTargeted(0.05, 0.95)
-    bodyQuantile := quantile.NewTargeted(0.05, 0.95)
+	headerStats := BasicStats{}
+	bodyStats := BasicStats{}
+	headerQuantile := quantile.NewTargeted(0.05, 0.95)
+	bodyQuantile := quantile.NewTargeted(0.05, 0.95)
 
 	outputStats := func() {
 		file, err := os.Create(fmt.Sprintf("hammer-report.%s", group.Name))
@@ -95,7 +120,7 @@ func CollectResults(group Group, results <-chan Result, wg *sync.WaitGroup) {
 			return
 		}
 		runTime := lastStart.Sub(firstStart).Seconds()
-        count := headerStats.Count
+		count := headerStats.Count
 		fmt.Fprintf(file, "HAMMER REPORT FOR %s:\n\n", group.Name)
 		fmt.Fprintf(file, "Run time: %.3f\n", runTime)
 		fmt.Fprintf(file, "Total hits: %.0f\n", count)
@@ -109,60 +134,60 @@ func CollectResults(group Group, results <-chan Result, wg *sync.WaitGroup) {
 		for _, code := range statusCodes {
 			fmt.Fprintf(file, "%d\t%d\n", code, statuses[code])
 		}
-        if count > 0 {
-            fmt.Fprintf(
-                file,
-                "\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
-                1000*headerStats.Mean(),
-                1000*headerStats.StdDev(),
-            )
-            fmt.Fprintf(
-                file,
-                "First byte 5-95 pct: (%.2f, %.2f) ms\n",
-                1000*headerQuantile.Query(0.05),
-                1000*headerQuantile.Query(0.95),
-            )
-            if group.ReadBody {
-                fmt.Fprintf(
-                    file,
-                    "\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
-                    1000*bodyStats.Mean(),
-                    1000*bodyStats.StdDev(),
-                )
-                fmt.Fprintf(
-                    file,
-                    "First byte 5-95 pct: (%.2f, %.2f) ms\n",
-                    1000*bodyQuantile.Query(0.05),
-                    1000*bodyQuantile.Query(0.95),
-                )
-            }
-        }
+		if count > 0 {
+			fmt.Fprintf(
+				file,
+				"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
+				1000*headerStats.Mean(),
+				1000*headerStats.StdDev(),
+			)
+			fmt.Fprintf(
+				file,
+				"First byte 5-95 pct: (%.2f, %.2f) ms\n",
+				1000*headerQuantile.Query(0.05),
+				1000*headerQuantile.Query(0.95),
+			)
+			if group.ReadBody {
+				fmt.Fprintf(
+					file,
+					"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
+					1000*bodyStats.Mean(),
+					1000*bodyStats.StdDev(),
+				)
+				fmt.Fprintf(
+					file,
+					"First byte 5-95 pct: (%.2f, %.2f) ms\n",
+					1000*bodyQuantile.Query(0.05),
+					1000*bodyQuantile.Query(0.95),
+				)
+			}
+		}
 	}
 
 	ticker := time.NewTicker(1 * time.Second)
-    defer ticker.Stop()
-    defer outputStats()
-    for {
+	defer ticker.Stop()
+	defer outputStats()
+	for {
 		select {
 		case res, ok := <-results:
 			if !ok {
-                return
+				return
 			}
 			statuses[res.Status]++
 
 			dur := res.GotHeaders.Sub(res.Start).Seconds()
-            headerStats.Add(dur)
-            headerQuantile.Insert(dur)
-            if group.ReadBody {
-                dur := res.GotBody.Sub(res.Start).Seconds()
-                bodyStats.Add(dur)
-                bodyQuantile.Insert(dur)
-            }
-            start := res.Start
-            end := res.GotHeaders
-            if group.ReadBody {
-                end = res.GotBody
-            }
+			headerStats.Add(dur)
+			headerQuantile.Insert(dur)
+			if group.ReadBody {
+				dur := res.GotBody.Sub(res.Start).Seconds()
+				bodyStats.Add(dur)
+				bodyQuantile.Insert(dur)
+			}
+			start := res.Start
+			end := res.GotHeaders
+			if group.ReadBody {
+				end = res.GotBody
+			}
 			if !timeinit {
 				firstStart = start
 				lastStart = end
@@ -194,13 +219,13 @@ func GenerateRequests(group Group, requests chan<- *http.Request, exit <-chan in
 
 	ticker := time.NewTicker(time.Duration(float64(time.Second) / group.QPS))
 
-    defer func() { close(requests) }()
-    defer ticker.Stop()
+	defer func() { close(requests) }()
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-exit:
-            return
+			return
 		case <-ticker.C:
 			req := readiedRequests[rand.Intn(len(readiedRequests))]
 			requests <- req
@@ -210,18 +235,18 @@ func GenerateRequests(group Group, requests chan<- *http.Request, exit <-chan in
 
 func Run(config Config) {
 	exit := make(chan int)
-    var finishedResults sync.WaitGroup
+	var finishedResults sync.WaitGroup
 
 	for groupName, group := range config.Groups {
 		group.Name = groupName
 		requests := make(chan *http.Request, group.Backlog)
 		results := make(chan Result, group.Threads*2)
-        var groupThreads sync.WaitGroup
+		var groupThreads sync.WaitGroup
 		for i := 0; i < group.Threads; i++ {
-            groupThreads.Add(1)
+			groupThreads.Add(1)
 			go SendRequests(group, requests, results, &groupThreads)
 		}
-        finishedResults.Add(1)
+		finishedResults.Add(1)
 		go CollectResults(group, results, &finishedResults)
 		go GenerateRequests(group, requests, exit)
 		// When all SendRequests exit, close results so that CollectResults will exit.
@@ -235,7 +260,7 @@ func Run(config Config) {
 	time.Sleep(time.Duration(config.RunFor * float64(time.Second)))
 	// And then signal GenerateRequests to stop.
 	close(exit)
-    finishedResults.Wait()
+	finishedResults.Wait()
 }
 
 func main() {
