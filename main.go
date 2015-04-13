@@ -163,16 +163,18 @@ func CollectResults(group Group, results <-chan Result, wg *sync.WaitGroup) {
 				)
 			}
 		}
+		file.Close()
 	}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
-	defer outputStats()
+
+loop:
 	for {
 		select {
 		case res, ok := <-results:
 			if !ok {
-				return
+				break loop
 			}
 			statuses[res.Status]++
 
@@ -205,6 +207,43 @@ func CollectResults(group Group, results <-chan Result, wg *sync.WaitGroup) {
 			outputStats()
 		}
 	}
+
+	outputStats()
+
+	statsFile, err := os.OpenFile("stats", os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+	if err == nil {
+		runTime := lastStart.Sub(firstStart).Seconds()
+		fmt.Fprintf(
+			statsFile,
+			"%s\t%d\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f",
+			group.Name,
+			group.Threads,
+			group.QPS,
+			runTime,
+			headerStats.Count,
+			headerStats.Count/runTime,
+			1000*headerStats.Mean(),
+			1000*headerStats.StdDev(),
+			1000*headerQuantile.Query(0.05),
+			1000*headerQuantile.Query(0.95),
+		)
+		if group.ReadBody {
+			fmt.Fprintf(
+				statsFile,
+				"%f\t%f\t%f\t%f\n",
+				1000*bodyStats.Mean(),
+				1000*bodyStats.StdDev(),
+				1000*bodyQuantile.Query(0.05),
+				1000*bodyQuantile.Query(0.95),
+			)
+		} else {
+			fmt.Fprintf(statsFile, "\n")
+		}
+		statsFile.Close()
+	} else {
+		log.Println(err)
+	}
+
 }
 
 func GenerateRequests(group Group, requests chan<- *http.Request, exit <-chan int) {
