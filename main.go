@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"time"
@@ -264,6 +265,7 @@ func Run(config Config) {
 }
 
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 	config, _ := LoadConfig()
 	Run(config)
 }
