@@ -24,7 +24,7 @@ type Request struct {
 	Callback    RequestCallback
 }
 
-type RequestGenerator func(*Hammer, chan<- Request, <-chan int)
+type RequestGenerator func(*Hammer)
 
 type Hammer struct {
 	RunFor           float64
@@ -33,6 +33,13 @@ type Hammer struct {
 	QPS              float64
 	LogErrors        bool
 	GenerateFunction RequestGenerator
+	exit             chan int
+	requests         chan Request
+	throttled        chan Request
+	results          chan Result
+	stats            chan StatsSummary
+	requestWorkers   sync.WaitGroup
+	finishedResults  sync.WaitGroup
 }
 
 type Result struct {
@@ -51,12 +58,12 @@ func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
 	log.Printf(fmt, args...)
 }
 
-func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Result, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (hammer *Hammer) sendRequests() {
+	defer hammer.requestWorkers.Done()
 
 	client := &http.Client{}
 
-	for req := range requests {
+	for req := range hammer.throttled {
 		var result Result
 		result.Name = req.Name
 		result.Start = time.Now()
@@ -93,7 +100,7 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Resul
 		if req.Callback != nil {
 			go req.Callback(req, res, result)
 		}
-		results <- result
+		hammer.results <- result
 	}
 }
 
@@ -258,8 +265,8 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 	}
 }
 
-func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- StatsSummary, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (hammer *Hammer) collectResults() {
+	defer hammer.finishedResults.Done()
 
 	statsMap := map[string]*Stats{}
 
@@ -268,14 +275,14 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 
 	defer func() {
 		for _, stats := range statsMap {
-			statschan <- stats.Summarize()
+			hammer.stats <- stats.Summarize()
 		}
-		close(statschan)
+		close(hammer.stats)
 	}()
 
 	for {
 		select {
-		case res, ok := <-results:
+		case res, ok := <-hammer.results:
 			if !ok {
 				return
 			}
@@ -312,8 +319,24 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 			}
 		case <-ticker.C:
 			for _, stats := range statsMap {
-				statschan <- stats.Summarize()
+				hammer.stats <- stats.Summarize()
 			}
+		}
+	}
+}
+
+func (hammer *Hammer) throttle() {
+	ticker := time.NewTicker(time.Duration(float64(time.Second) / hammer.QPS))
+	defer ticker.Stop()
+	defer close(hammer.throttled)
+
+	for {
+		select {
+		case <-hammer.exit:
+			return
+		case <-ticker.C:
+			req := <-hammer.requests
+			hammer.throttled <- req
 		}
 	}
 }
@@ -334,51 +357,49 @@ func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[s
 	}
 	num := len(readiedRequests)
 
-	return func(hammer *Hammer, requests chan<- Request, exit <-chan int) {
-		defer func() { close(requests) }()
-
-		ticker := time.NewTicker(time.Duration(float64(time.Second) / hammer.QPS))
-		defer ticker.Stop()
+	return func(hammer *Hammer) {
+		defer func() { close(hammer.requests) }()
 
 		for {
 			select {
-			case <-exit:
+			case <-hammer.exit:
 				return
-			case <-ticker.C:
+			default:
 				var idx int
 				if num == 1 {
 					idx = 0
 				} else {
 					idx = rand.Intn(len(readiedRequests))
 				}
-				requests <- readiedRequests[idx]
+				hammer.requests <- readiedRequests[idx]
 			}
 		}
 	}
 }
 
-func (hammer *Hammer) Run(statschan chan<- StatsSummary) {
-	exit := make(chan int)
-	var requestWorkers, finishedResults sync.WaitGroup
-
-	requests := make(chan Request, hammer.Backlog)
-	results := make(chan Result, hammer.Threads*2)
+func (hammer *Hammer) Run(statschan chan StatsSummary) {
+	hammer.exit = make(chan int)
+	hammer.requests = make(chan Request)
+	hammer.throttled = make(chan Request, hammer.Backlog)
+	hammer.results = make(chan Result, hammer.Threads*2)
+	hammer.stats = statschan
 
 	for i := 0; i < hammer.Threads; i++ {
-		requestWorkers.Add(1)
-		go hammer.sendRequests(requests, results, &requestWorkers)
+		hammer.requestWorkers.Add(1)
+		go hammer.sendRequests()
 	}
-	finishedResults.Add(1)
-	go hammer.collectResults(results, statschan, &finishedResults)
-	go hammer.GenerateFunction(hammer, requests, exit)
+	hammer.finishedResults.Add(1)
+	go hammer.collectResults()
+	go hammer.throttle()
+	go hammer.GenerateFunction(hammer)
 	go func() {
-		requestWorkers.Wait()
-		close(results)
+		hammer.requestWorkers.Wait()
+		close(hammer.results)
 	}()
 
 	// Give it time to run...
 	time.Sleep(time.Duration(hammer.RunFor * float64(time.Second)))
 	// And then signal GenerateRequests to stop.
-	close(exit)
-	finishedResults.Wait()
+	close(hammer.exit)
+	hammer.finishedResults.Wait()
 }
