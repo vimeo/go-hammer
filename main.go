@@ -32,6 +32,10 @@ var logErrors = goopt.Flag(
 	"Don't log error responses.",
 )
 
+var name = goopt.String([]string{"--name"}, "hammer", "name for reporting")
+var report = goopt.String([]string{"--report"}, "", "filename to write a report")
+var statsfile = goopt.String([]string{"--stats"}, "", "filename to write statistics")
+
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
@@ -57,7 +61,7 @@ func main() {
 	}
 
 	generator := hammer.RandomURLGenerator(
-		"hammer",
+		*name,
 		!*skipBody,
 		*urls,
 		headers,
@@ -72,14 +76,38 @@ func main() {
 		GenerateFunction: generator,
 	}
 
+	var reportPrinter func(hammer.StatsSummary)
+	if *report != "" {
+		reportPrinter = h.ReportPrinter(*report)
+	}
+	var statsPrinter func(hammer.StatsSummary)
+	if *statsfile != "" {
+		statsPrinter = h.StatsPrinter(*statsfile)
+	}
+
 	statschan := make(chan hammer.StatsSummary)
 	wg := sync.WaitGroup{}
 	wg.Add(1)
+	var percentDone int
+
 	go func() {
 		var stats hammer.StatsSummary
 		for stats = range statschan {
+			if reportPrinter != nil {
+				reportPrinter(stats)
+			}
+			runTime := stats.End.Sub(stats.Begin).Seconds()
+			percent := int(100 * runTime / h.RunFor)
+			if percent/10 > percentDone/10 {
+				fmt.Printf("%d%%...", percent)
+			}
+			percentDone = percent
 		}
+		fmt.Printf("done\n")
 		stats.PrintReport(os.Stdout)
+		if statsPrinter != nil {
+			statsPrinter(stats)
+		}
 		wg.Done()
 	}()
 

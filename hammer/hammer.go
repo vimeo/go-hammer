@@ -287,15 +287,12 @@ func (stats *StatsSummary) PrintReport(w io.Writer) {
 	count := stats.Headers.Count
 	fmt.Fprintf(
 		w,
-		`Hammer REPORT FOR %s:
-
-Run time: %.3f
+		`Run time: %.3f
 Total hits: %.0f
 Hits/sec: %.3f
 
 Status totals:
 `,
-		stats.Name,
 		runTime,
 		count,
 		count/runTime,
@@ -345,6 +342,7 @@ func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
 			hammer.warn(err.Error())
 			return
 		}
+		fmt.Fprintf(w, "HAMMER REPORT FOR %s\n\n", stats.Name)
 		stats.PrintReport(w)
 		w.Close()
 	}
