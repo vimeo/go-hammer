@@ -16,7 +16,6 @@ type Config struct {
 }
 
 type Group struct {
-	Name      string
 	Threads   int
 	Backlog   int
 	QPS       float64
@@ -46,14 +45,13 @@ func main() {
 
 	for groupName, group := range config.Groups {
 		h := hammer.Hammer{
-			Name:             groupName,
 			RunFor:           config.RunFor,
 			Threads:          group.Threads,
 			Backlog:          group.Backlog,
 			QPS:              group.QPS,
 			ReadBody:         group.ReadBody,
 			LogErrors:        group.LogErrors,
-			GenerateFunction: hammer.RandomURLGenerator(group.URLs, group.Headers),
+			GenerateFunction: hammer.RandomURLGenerator(groupName, group.URLs, group.Headers),
 		}
 		statschan := make(chan hammer.Stats)
 		printReport := h.ReportPrinter("hammer-report.%s")

@@ -15,12 +15,17 @@ import (
 	"github.com/bmizerany/perks/quantile"
 )
 
-type Request *http.Request
+type RequestCallback func(*http.Response, Result)
+
+type Request struct {
+	HTTPRequest *http.Request
+	Name        string
+	Callback    RequestCallback
+}
 
 type RequestGenerator func(*Hammer, chan<- Request, <-chan int)
 
 type Hammer struct {
-	Name             string
 	RunFor           float64
 	Threads          int
 	Backlog          int
@@ -30,7 +35,8 @@ type Hammer struct {
 	GenerateFunction RequestGenerator
 }
 
-type result struct {
+type Result struct {
+	Name       string
 	Status     int
 	Start      time.Time
 	GotHeaders time.Time
@@ -45,15 +51,16 @@ func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
 	log.Printf(fmt, args...)
 }
 
-func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- result, wg *sync.WaitGroup) {
+func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Result, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	client := &http.Client{}
 
 	for req := range requests {
-		var result result
+		var result Result
+		result.Name = req.Name
 		result.Start = time.Now()
-		res, err := client.Do(req)
+		res, err := client.Do(req.HTTPRequest)
 		result.GotHeaders = time.Now()
 		if err != nil {
 			result.Status = 499
@@ -74,7 +81,7 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- resul
 					io.Copy(ioutil.Discard, res.Body)
 				}
 				result.GotBody = time.Now()
-				hammer.warnf("Got status %s for %s\n", res.Status, req.URL.String())
+				hammer.warnf("Got status %s for %s\n", res.Status, req.HTTPRequest.URL.String())
 			} else if hammer.ReadBody {
 				io.Copy(ioutil.Discard, res.Body)
 				result.GotBody = time.Now()
@@ -82,39 +89,44 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- resul
 				res.Body.Close()
 			}
 		}
+		if req.Callback != nil {
+			go req.Callback(res, result)
+		}
 		results <- result
 	}
 }
 
 type Stats struct {
-	begin          time.Time
-	end            time.Time
-	statuses       map[int]int
-	headerStats    BasicStats
-	headerQuantile quantile.Stream
-	bodyStats      BasicStats
-	bodyQuantile   quantile.Stream
+	Name           string
+	Begin          time.Time
+	End            time.Time
+	Statuses       map[int]int
+	HeaderStats    BasicStats
+	HeaderQuantile quantile.Stream
+	BodyStats      BasicStats
+	BodyQuantile   quantile.Stream
 }
 
-func newStats(name string, quantiles ...float64) Stats {
-	return Stats{
-		statuses:       make(map[int]int),
-		headerStats:    BasicStats{},
-		headerQuantile: *(quantile.NewTargeted(quantiles...)),
-		bodyStats:      BasicStats{},
-		bodyQuantile:   *(quantile.NewTargeted(quantiles...)),
+func newStats(name string, quantiles ...float64) *Stats {
+	return &Stats{
+		Name:           name,
+		Statuses:       make(map[int]int),
+		HeaderStats:    BasicStats{},
+		HeaderQuantile: *(quantile.NewTargeted(quantiles...)),
+		BodyStats:      BasicStats{},
+		BodyQuantile:   *(quantile.NewTargeted(quantiles...)),
 	}
 }
 
 func (hammer *Hammer) ReportPrinter(format string) func(Stats) {
 	return func(stats Stats) {
-		file, err := os.Create(fmt.Sprintf(format, hammer.Name))
+		file, err := os.Create(fmt.Sprintf(format, stats.Name))
 		if err != nil {
 			hammer.warn(err.Error())
 			return
 		}
-		runTime := stats.end.Sub(stats.begin).Seconds()
-		count := stats.headerStats.Count
+		runTime := stats.End.Sub(stats.Begin).Seconds()
+		count := stats.HeaderStats.Count
 		fmt.Fprintf(
 			file,
 			`Hammer REPORT FOR %s:
@@ -125,44 +137,44 @@ Hits/sec: %.3f
 
 Status totals:
 `,
-			hammer.Name,
+			stats.Name,
 			runTime,
 			count,
 			count/runTime,
 		)
 		statusCodes := []int{}
-		for code, _ := range stats.statuses {
+		for code, _ := range stats.Statuses {
 			statusCodes = append(statusCodes, code)
 		}
 		sort.Ints(statusCodes)
 		for _, code := range statusCodes {
-			fmt.Fprintf(file, "%d\t%d\t%.3f\n", code, stats.statuses[code], 100*float64(stats.statuses[code])/count)
+			fmt.Fprintf(file, "%d\t%d\t%.3f\n", code, stats.Statuses[code], 100*float64(stats.Statuses[code])/count)
 		}
 		if count > 0 {
 			fmt.Fprintf(
 				file,
 				"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
-				1000*stats.headerStats.Mean(),
-				1000*stats.headerStats.StdDev(),
+				1000*stats.HeaderStats.Mean(),
+				1000*stats.HeaderStats.StdDev(),
 			)
 			fmt.Fprintf(
 				file,
 				"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-				1000*stats.headerQuantile.Query(0.05),
-				1000*stats.headerQuantile.Query(0.95),
+				1000*stats.HeaderQuantile.Query(0.05),
+				1000*stats.HeaderQuantile.Query(0.95),
 			)
 			if hammer.ReadBody {
 				fmt.Fprintf(
 					file,
 					"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
-					1000*stats.bodyStats.Mean(),
-					1000*stats.bodyStats.StdDev(),
+					1000*stats.BodyStats.Mean(),
+					1000*stats.BodyStats.StdDev(),
 				)
 				fmt.Fprintf(
 					file,
 					"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-					1000*stats.bodyQuantile.Query(0.05),
-					1000*stats.bodyQuantile.Query(0.95),
+					1000*stats.BodyQuantile.Query(0.05),
+					1000*stats.BodyQuantile.Query(0.95),
 				)
 			}
 		}
@@ -177,30 +189,30 @@ func (hammer *Hammer) StatsPrinter(filename string) func(Stats) {
 			hammer.warn(err.Error())
 			return
 		}
-		runTime := stats.end.Sub(stats.begin).Seconds()
-		count := stats.headerStats.Count
+		runTime := stats.End.Sub(stats.Begin).Seconds()
+		count := stats.HeaderStats.Count
 		fmt.Fprintf(
 			statsFile,
 			"%s\t%d\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f",
-			hammer.Name,
+			stats.Name,
 			hammer.Threads,
 			hammer.QPS,
 			runTime,
 			count,
 			count/runTime,
-			1000*stats.headerStats.Mean(),
-			1000*stats.headerStats.StdDev(),
-			1000*stats.headerQuantile.Query(0.05),
-			1000*stats.headerQuantile.Query(0.95),
+			1000*stats.HeaderStats.Mean(),
+			1000*stats.HeaderStats.StdDev(),
+			1000*stats.HeaderQuantile.Query(0.05),
+			1000*stats.HeaderQuantile.Query(0.95),
 		)
 		if hammer.ReadBody {
 			fmt.Fprintf(
 				statsFile,
 				"%f\t%f\t%f\t%f\n",
-				1000*stats.bodyStats.Mean(),
-				1000*stats.bodyStats.StdDev(),
-				1000*stats.bodyQuantile.Query(0.05),
-				1000*stats.bodyQuantile.Query(0.95),
+				1000*stats.BodyStats.Mean(),
+				1000*stats.BodyStats.StdDev(),
+				1000*stats.BodyQuantile.Query(0.05),
+				1000*stats.BodyQuantile.Query(0.95),
 			)
 		} else {
 			fmt.Fprintf(statsFile, "\n")
@@ -209,17 +221,18 @@ func (hammer *Hammer) StatsPrinter(filename string) func(Stats) {
 	}
 }
 
-func (hammer *Hammer) collectResults(results <-chan result, statschan chan<- Stats, wg *sync.WaitGroup) {
+func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Stats, wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	var timeinit bool
-	stats := newStats(hammer.Name, 0.05, 0.95)
+	statsMap := map[string]*Stats{}
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	defer func() {
-		statschan <- stats
+		for _, stats := range statsMap {
+			statschan <- *stats
+		}
 		close(statschan)
 	}()
 
@@ -229,38 +242,46 @@ func (hammer *Hammer) collectResults(results <-chan result, statschan chan<- Sta
 			if !ok {
 				return
 			}
-			stats.statuses[res.Status]++
+
+			stats, statsExisted := statsMap[res.Name]
+			if !statsExisted {
+				stats = newStats(res.Name, 0.05, 0.95)
+				statsMap[res.Name] = stats
+			}
+
+			stats.Statuses[res.Status]++
 
 			start := res.Start
 			end := res.GotHeaders
 			dur := end.Sub(start).Seconds()
-			stats.headerStats.Add(dur)
-			stats.headerQuantile.Insert(dur)
+			stats.HeaderStats.Add(dur)
+			stats.HeaderQuantile.Insert(dur)
 			if hammer.ReadBody {
 				end = res.GotBody
 				dur := end.Sub(start).Seconds()
-				stats.bodyStats.Add(dur)
-				stats.bodyQuantile.Insert(dur)
+				stats.BodyStats.Add(dur)
+				stats.BodyQuantile.Insert(dur)
 			}
-			if !timeinit {
-				stats.begin = start
-				stats.end = end
-				timeinit = true
+			if !statsExisted {
+				stats.Begin = start
+				stats.End = end
 			} else {
-				if start.Before(stats.begin) {
-					stats.begin = start
+				if start.Before(stats.Begin) {
+					stats.Begin = start
 				}
-				if start.After(stats.end) {
-					stats.end = start
+				if start.After(stats.End) {
+					stats.End = start
 				}
 			}
 		case <-ticker.C:
-			statschan <- stats
+			for _, stats := range statsMap {
+				statschan <- *stats
+			}
 		}
 	}
 }
 
-func RandomURLGenerator(URLs []string, Headers map[string][]string) RequestGenerator {
+func RandomURLGenerator(name string, URLs []string, Headers map[string][]string) RequestGenerator {
 	readiedRequests := make([]Request, len(URLs))
 	for i, url := range URLs {
 		req, err := http.NewRequest("GET", url, nil)
@@ -268,7 +289,10 @@ func RandomURLGenerator(URLs []string, Headers map[string][]string) RequestGener
 			panic(err)
 		}
 		req.Header = Headers
-		readiedRequests[i] = req
+		readiedRequests[i] = Request{
+			HTTPRequest: req,
+			Name:        name,
+		}
 	}
 	num := len(readiedRequests)
 
@@ -300,7 +324,7 @@ func (hammer *Hammer) Run(statschan chan<- Stats) {
 	var requestWorkers, finishedResults sync.WaitGroup
 
 	requests := make(chan Request, hammer.Backlog)
-	results := make(chan result, hammer.Threads*2)
+	results := make(chan Result, hammer.Threads*2)
 
 	for i := 0; i < hammer.Threads; i++ {
 		requestWorkers.Add(1)
