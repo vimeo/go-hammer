@@ -42,7 +42,7 @@ func (hammer *Hammer) warn(msg string) {
 }
 
 func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
-	log.Printf(fmt, args)
+	log.Printf(fmt, args...)
 }
 
 func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- result, wg *sync.WaitGroup) {
