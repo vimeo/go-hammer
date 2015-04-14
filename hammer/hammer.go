@@ -86,6 +86,14 @@ func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[s
 	}
 }
 
+func (hammer *Hammer) SendRequest(req Request) {
+    hammer.requests <- req
+}
+
+func (hammer *Hammer) SendRequestImmediately(req Request) {
+    hammer.throttled <- req
+}
+
 func (hammer *Hammer) throttle() {
 	ticker := time.NewTicker(time.Duration(float64(time.Second) / hammer.QPS))
 	defer ticker.Stop()
