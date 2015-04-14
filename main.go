@@ -98,7 +98,7 @@ func main() {
 			}
 			runTime := stats.End.Sub(stats.Begin).Seconds()
 			percent := int(100 * runTime / h.RunFor)
-			if percent/10 > percentDone/10 {
+			if percent/10 > percentDone/10 && percent < 100 {
 				fmt.Printf("%d%%...", percent)
 			}
 			percentDone = percent
