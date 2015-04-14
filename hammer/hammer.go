@@ -136,7 +136,7 @@ Status totals:
 		}
 		sort.Ints(statusCodes)
 		for _, code := range statusCodes {
-			fmt.Fprintf(file, "%d\t%d\n", code, stats.statuses[code])
+			fmt.Fprintf(file, "%d\t%d\t%.3f\n", code, stats.statuses[code], 100*float64(stats.statuses[code])/count)
 		}
 		if count > 0 {
 			fmt.Fprintf(
