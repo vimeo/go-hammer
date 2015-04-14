@@ -15,17 +15,6 @@ import (
 	"github.com/bmizerany/perks/quantile"
 )
 
-type RequestCallback func(Request, *http.Response, Result)
-
-type Request struct {
-	HTTPRequest *http.Request
-	Name        string
-	ReadBody    bool
-	Callback    RequestCallback
-}
-
-type RequestGenerator func(*Hammer)
-
 type Hammer struct {
 	RunFor           float64
 	Threads          int
@@ -42,20 +31,83 @@ type Hammer struct {
 	finishedResults  sync.WaitGroup
 }
 
-type Result struct {
-	Name       string
-	Status     int
-	Start      time.Time
-	GotHeaders time.Time
-	GotBody    time.Time
-}
-
 func (hammer *Hammer) warn(msg string) {
 	log.Println(msg)
 }
 
 func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
 	log.Printf(fmt, args...)
+}
+
+type Request struct {
+	HTTPRequest *http.Request
+	Name        string
+	ReadBody    bool
+	Callback    RequestCallback
+}
+
+type RequestCallback func(Request, *http.Response, Result)
+
+type RequestGenerator func(*Hammer)
+
+func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[string][]string) RequestGenerator {
+	readiedRequests := make([]Request, len(URLs))
+	for i, url := range URLs {
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			panic(err)
+		}
+		req.Header = Headers
+		readiedRequests[i] = Request{
+			ReadBody:    readBody,
+			HTTPRequest: req,
+			Name:        name,
+		}
+	}
+	num := len(readiedRequests)
+
+	return func(hammer *Hammer) {
+		defer func() { close(hammer.requests) }()
+
+		for {
+			select {
+			case <-hammer.exit:
+				return
+			default:
+				var idx int
+				if num == 1 {
+					idx = 0
+				} else {
+					idx = rand.Intn(len(readiedRequests))
+				}
+				hammer.requests <- readiedRequests[idx]
+			}
+		}
+	}
+}
+
+func (hammer *Hammer) throttle() {
+	ticker := time.NewTicker(time.Duration(float64(time.Second) / hammer.QPS))
+	defer ticker.Stop()
+	defer close(hammer.throttled)
+
+	for {
+		select {
+		case <-hammer.exit:
+			return
+		case <-ticker.C:
+			req := <-hammer.requests
+			hammer.throttled <- req
+		}
+	}
+}
+
+type Result struct {
+	Name       string
+	Status     int
+	Start      time.Time
+	GotHeaders time.Time
+	GotBody    time.Time
 }
 
 func (hammer *Hammer) sendRequests() {
@@ -161,6 +213,66 @@ func (stats *Stats) Summarize() (summary StatsSummary) {
 	return
 }
 
+func (hammer *Hammer) collectResults() {
+	defer hammer.finishedResults.Done()
+
+	statsMap := map[string]*Stats{}
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	defer func() {
+		for _, stats := range statsMap {
+			hammer.stats <- stats.Summarize()
+		}
+		close(hammer.stats)
+	}()
+
+	for {
+		select {
+		case res, ok := <-hammer.results:
+			if !ok {
+				return
+			}
+
+			stats, statsExisted := statsMap[res.Name]
+			if !statsExisted {
+				stats = newStats(res.Name, 0.05, 0.95)
+				statsMap[res.Name] = stats
+			}
+
+			stats.Statuses[res.Status]++
+
+			start := res.Start
+			end := res.GotHeaders
+			dur := end.Sub(start).Seconds()
+			stats.HeaderStats.Add(dur)
+			stats.HeaderQuantile.Insert(dur)
+			if res.GotBody != (time.Time{}) {
+				end = res.GotBody
+				dur := end.Sub(start).Seconds()
+				stats.BodyStats.Add(dur)
+				stats.BodyQuantile.Insert(dur)
+			}
+			if !statsExisted {
+				stats.Begin = start
+				stats.End = end
+			} else {
+				if start.Before(stats.Begin) {
+					stats.Begin = start
+				}
+				if start.After(stats.End) {
+					stats.End = start
+				}
+			}
+		case <-ticker.C:
+			for _, stats := range statsMap {
+				hammer.stats <- stats.Summarize()
+			}
+		}
+	}
+}
+
 func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
 	return func(stats StatsSummary) {
 		file, err := os.Create(fmt.Sprintf(format, stats.Name))
@@ -261,118 +373,6 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 			fmt.Fprintf(statsFile, "\n")
 		}
 		statsFile.Close()
-	}
-}
-
-func (hammer *Hammer) collectResults() {
-	defer hammer.finishedResults.Done()
-
-	statsMap := map[string]*Stats{}
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	defer func() {
-		for _, stats := range statsMap {
-			hammer.stats <- stats.Summarize()
-		}
-		close(hammer.stats)
-	}()
-
-	for {
-		select {
-		case res, ok := <-hammer.results:
-			if !ok {
-				return
-			}
-
-			stats, statsExisted := statsMap[res.Name]
-			if !statsExisted {
-				stats = newStats(res.Name, 0.05, 0.95)
-				statsMap[res.Name] = stats
-			}
-
-			stats.Statuses[res.Status]++
-
-			start := res.Start
-			end := res.GotHeaders
-			dur := end.Sub(start).Seconds()
-			stats.HeaderStats.Add(dur)
-			stats.HeaderQuantile.Insert(dur)
-			if res.GotBody != (time.Time{}) {
-				end = res.GotBody
-				dur := end.Sub(start).Seconds()
-				stats.BodyStats.Add(dur)
-				stats.BodyQuantile.Insert(dur)
-			}
-			if !statsExisted {
-				stats.Begin = start
-				stats.End = end
-			} else {
-				if start.Before(stats.Begin) {
-					stats.Begin = start
-				}
-				if start.After(stats.End) {
-					stats.End = start
-				}
-			}
-		case <-ticker.C:
-			for _, stats := range statsMap {
-				hammer.stats <- stats.Summarize()
-			}
-		}
-	}
-}
-
-func (hammer *Hammer) throttle() {
-	ticker := time.NewTicker(time.Duration(float64(time.Second) / hammer.QPS))
-	defer ticker.Stop()
-	defer close(hammer.throttled)
-
-	for {
-		select {
-		case <-hammer.exit:
-			return
-		case <-ticker.C:
-			req := <-hammer.requests
-			hammer.throttled <- req
-		}
-	}
-}
-
-func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[string][]string) RequestGenerator {
-	readiedRequests := make([]Request, len(URLs))
-	for i, url := range URLs {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			panic(err)
-		}
-		req.Header = Headers
-		readiedRequests[i] = Request{
-			ReadBody:    readBody,
-			HTTPRequest: req,
-			Name:        name,
-		}
-	}
-	num := len(readiedRequests)
-
-	return func(hammer *Hammer) {
-		defer func() { close(hammer.requests) }()
-
-		for {
-			select {
-			case <-hammer.exit:
-				return
-			default:
-				var idx int
-				if num == 1 {
-					idx = 0
-				} else {
-					idx = rand.Intn(len(readiedRequests))
-				}
-				hammer.requests <- readiedRequests[idx]
-			}
-		}
 	}
 }
 
