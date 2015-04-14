@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/arodland/go-descriptivestats/descriptivestats"
 	"github.com/bmizerany/perks/quantile"
 )
 
@@ -87,11 +88,11 @@ func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[s
 }
 
 func (hammer *Hammer) SendRequest(req Request) {
-    hammer.requests <- req
+	hammer.requests <- req
 }
 
 func (hammer *Hammer) SendRequestImmediately(req Request) {
-    hammer.throttled <- req
+	hammer.throttled <- req
 }
 
 func (hammer *Hammer) throttle() {
@@ -169,14 +170,14 @@ type Stats struct {
 	Begin          time.Time
 	End            time.Time
 	Statuses       map[int]int
-	HeaderStats    BasicStats
+	HeaderStats    descriptivestats.Stats
 	HeaderQuantile quantile.Stream
-	BodyStats      BasicStats
+	BodyStats      descriptivestats.Stats
 	BodyQuantile   quantile.Stream
 }
 
 type SingleStatSummary struct {
-	BasicStats
+	descriptivestats.Stats
 	Quantiles map[float64]float64
 }
 
@@ -194,9 +195,9 @@ func newStats(name string, quantiles ...float64) *Stats {
 		Name:           name,
 		Quantiles:      quantiles,
 		Statuses:       make(map[int]int),
-		HeaderStats:    BasicStats{},
+		HeaderStats:    descriptivestats.Stats{},
 		HeaderQuantile: *(quantile.NewTargeted(quantiles...)),
-		BodyStats:      BasicStats{},
+		BodyStats:      descriptivestats.Stats{},
 		BodyQuantile:   *(quantile.NewTargeted(quantiles...)),
 	}
 }
@@ -206,12 +207,12 @@ func (stats *Stats) Summarize() (summary StatsSummary) {
 	summary.Begin = stats.Begin
 	summary.End = stats.End
 	summary.Statuses = stats.Statuses
-	summary.Headers.BasicStats = stats.HeaderStats
+	summary.Headers.Stats = stats.HeaderStats
 	summary.Headers.Quantiles = make(map[float64]float64, len(stats.Quantiles))
 	for _, quantile := range stats.Quantiles {
 		summary.Headers.Quantiles[quantile] = stats.HeaderQuantile.Query(quantile)
 	}
-	summary.Body.BasicStats = stats.BodyStats
+	summary.Body.Stats = stats.BodyStats
 	if stats.BodyStats.Count > 0 {
 		summary.Body.Quantiles = make(map[float64]float64, len(stats.Quantiles))
 		for _, quantile := range stats.Quantiles {
