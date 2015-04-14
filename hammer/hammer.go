@@ -282,18 +282,12 @@ func (hammer *Hammer) collectResults() {
 	}
 }
 
-func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
-	return func(stats StatsSummary) {
-		file, err := os.Create(fmt.Sprintf(format, stats.Name))
-		if err != nil {
-			hammer.warn(err.Error())
-			return
-		}
-		runTime := stats.End.Sub(stats.Begin).Seconds()
-		count := stats.Headers.Count
-		fmt.Fprintf(
-			file,
-			`Hammer REPORT FOR %s:
+func (stats *StatsSummary) PrintReport(w io.Writer) {
+	runTime := stats.End.Sub(stats.Begin).Seconds()
+	count := stats.Headers.Count
+	fmt.Fprintf(
+		w,
+		`Hammer REPORT FOR %s:
 
 Run time: %.3f
 Total hits: %.0f
@@ -301,48 +295,58 @@ Hits/sec: %.3f
 
 Status totals:
 `,
-			stats.Name,
-			runTime,
-			count,
-			count/runTime,
+		stats.Name,
+		runTime,
+		count,
+		count/runTime,
+	)
+	statusCodes := []int{}
+	for code, _ := range stats.Statuses {
+		statusCodes = append(statusCodes, code)
+	}
+	sort.Ints(statusCodes)
+	for _, code := range statusCodes {
+		fmt.Fprintf(w, "%d\t%d\t%.3f\n", code, stats.Statuses[code], 100*float64(stats.Statuses[code])/count)
+	}
+	if count > 0 {
+		fmt.Fprintf(
+			w,
+			"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
+			1000*stats.Headers.Mean(),
+			1000*stats.Headers.StdDev(),
 		)
-		statusCodes := []int{}
-		for code, _ := range stats.Statuses {
-			statusCodes = append(statusCodes, code)
-		}
-		sort.Ints(statusCodes)
-		for _, code := range statusCodes {
-			fmt.Fprintf(file, "%d\t%d\t%.3f\n", code, stats.Statuses[code], 100*float64(stats.Statuses[code])/count)
-		}
-		if count > 0 {
+		fmt.Fprintf(
+			w,
+			"First byte 5-95 pct: (%.2f, %.2f) ms\n",
+			1000*stats.Headers.Quantiles[0.05],
+			1000*stats.Headers.Quantiles[0.95],
+		)
+		if stats.Body.Count > 0 {
 			fmt.Fprintf(
-				file,
-				"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
-				1000*stats.Headers.Mean(),
-				1000*stats.Headers.StdDev(),
+				w,
+				"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
+				1000*stats.Body.Mean(),
+				1000*stats.Body.StdDev(),
 			)
 			fmt.Fprintf(
-				file,
+				w,
 				"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-				1000*stats.Headers.Quantiles[0.05],
-				1000*stats.Headers.Quantiles[0.95],
+				1000*stats.Body.Quantiles[0.05],
+				1000*stats.Body.Quantiles[0.95],
 			)
-			if stats.Body.Count > 0 {
-				fmt.Fprintf(
-					file,
-					"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
-					1000*stats.Body.Mean(),
-					1000*stats.Body.StdDev(),
-				)
-				fmt.Fprintf(
-					file,
-					"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-					1000*stats.Body.Quantiles[0.05],
-					1000*stats.Body.Quantiles[0.95],
-				)
-			}
 		}
-		file.Close()
+	}
+}
+
+func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
+	return func(stats StatsSummary) {
+		w, err := os.Create(fmt.Sprintf(format, stats.Name))
+		if err != nil {
+			hammer.warn(err.Error())
+			return
+		}
+		stats.PrintReport(w)
+		w.Close()
 	}
 }
 
