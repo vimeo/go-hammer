@@ -45,8 +45,6 @@ func main() {
 	var wg sync.WaitGroup
 
 	for groupName, group := range config.Groups {
-		wg.Add(1)
-		defer wg.Done()
 		h := hammer.Hammer{
 			Name:             groupName,
 			RunFor:           config.RunFor,
@@ -61,8 +59,9 @@ func main() {
 		printReport := h.ReportPrinter("hammer-report.%s")
 		printStats := h.StatsPrinter("stats")
 
-		go h.Run(statschan)
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			var stats hammer.Stats
 			for stats = range statschan {
 				printReport(stats)
@@ -71,7 +70,7 @@ func main() {
 			printStats(stats)
 		}()
 
-		h.Run(statschan)
+		go h.Run(statschan)
 	}
 	wg.Wait()
 }
