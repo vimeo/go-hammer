@@ -98,6 +98,7 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Resul
 
 type Stats struct {
 	Name           string
+	Quantiles      []float64
 	Begin          time.Time
 	End            time.Time
 	Statuses       map[int]int
@@ -107,9 +108,24 @@ type Stats struct {
 	BodyQuantile   quantile.Stream
 }
 
+type SingleStatSummary struct {
+	BasicStats
+	Quantiles map[float64]float64
+}
+
+type StatsSummary struct {
+	Name     string
+	Begin    time.Time
+	End      time.Time
+	Statuses map[int]int
+	Headers  SingleStatSummary
+	Body     SingleStatSummary
+}
+
 func newStats(name string, quantiles ...float64) *Stats {
 	return &Stats{
 		Name:           name,
+		Quantiles:      quantiles,
 		Statuses:       make(map[int]int),
 		HeaderStats:    BasicStats{},
 		HeaderQuantile: *(quantile.NewTargeted(quantiles...)),
@@ -118,15 +134,35 @@ func newStats(name string, quantiles ...float64) *Stats {
 	}
 }
 
-func (hammer *Hammer) ReportPrinter(format string) func(Stats) {
-	return func(stats Stats) {
+func (stats *Stats) Summarize(body bool) (summary StatsSummary) {
+	summary.Name = stats.Name
+	summary.Begin = stats.Begin
+	summary.End = stats.End
+	summary.Statuses = stats.Statuses
+	summary.Headers.BasicStats = stats.HeaderStats
+	summary.Headers.Quantiles = make(map[float64]float64, len(stats.Quantiles))
+	for _, quantile := range stats.Quantiles {
+		summary.Headers.Quantiles[quantile] = stats.HeaderQuantile.Query(quantile)
+	}
+	if body {
+		summary.Body.BasicStats = stats.BodyStats
+		summary.Body.Quantiles = make(map[float64]float64, len(stats.Quantiles))
+		for _, quantile := range stats.Quantiles {
+			summary.Body.Quantiles[quantile] = stats.BodyQuantile.Query(quantile)
+		}
+	}
+	return
+}
+
+func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
+	return func(stats StatsSummary) {
 		file, err := os.Create(fmt.Sprintf(format, stats.Name))
 		if err != nil {
 			hammer.warn(err.Error())
 			return
 		}
 		runTime := stats.End.Sub(stats.Begin).Seconds()
-		count := stats.HeaderStats.Count
+		count := stats.Headers.Count
 		fmt.Fprintf(
 			file,
 			`Hammer REPORT FOR %s:
@@ -154,27 +190,27 @@ Status totals:
 			fmt.Fprintf(
 				file,
 				"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
-				1000*stats.HeaderStats.Mean(),
-				1000*stats.HeaderStats.StdDev(),
+				1000*stats.Headers.Mean(),
+				1000*stats.Headers.StdDev(),
 			)
 			fmt.Fprintf(
 				file,
 				"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-				1000*stats.HeaderQuantile.Query(0.05),
-				1000*stats.HeaderQuantile.Query(0.95),
+				1000*stats.Headers.Quantiles[0.05],
+				1000*stats.Headers.Quantiles[0.95],
 			)
 			if hammer.ReadBody {
 				fmt.Fprintf(
 					file,
 					"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
-					1000*stats.BodyStats.Mean(),
-					1000*stats.BodyStats.StdDev(),
+					1000*stats.Body.Mean(),
+					1000*stats.Body.StdDev(),
 				)
 				fmt.Fprintf(
 					file,
 					"First byte 5-95 pct: (%.2f, %.2f) ms\n",
-					1000*stats.BodyQuantile.Query(0.05),
-					1000*stats.BodyQuantile.Query(0.95),
+					1000*stats.Body.Quantiles[0.05],
+					1000*stats.Body.Quantiles[0.95],
 				)
 			}
 		}
@@ -182,15 +218,15 @@ Status totals:
 	}
 }
 
-func (hammer *Hammer) StatsPrinter(filename string) func(Stats) {
-	return func(stats Stats) {
+func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
+	return func(stats StatsSummary) {
 		statsFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
 		if err != nil {
 			hammer.warn(err.Error())
 			return
 		}
 		runTime := stats.End.Sub(stats.Begin).Seconds()
-		count := stats.HeaderStats.Count
+		count := stats.Headers.Count
 		fmt.Fprintf(
 			statsFile,
 			"%s\t%d\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f",
@@ -200,19 +236,19 @@ func (hammer *Hammer) StatsPrinter(filename string) func(Stats) {
 			runTime,
 			count,
 			count/runTime,
-			1000*stats.HeaderStats.Mean(),
-			1000*stats.HeaderStats.StdDev(),
-			1000*stats.HeaderQuantile.Query(0.05),
-			1000*stats.HeaderQuantile.Query(0.95),
+			1000*stats.Headers.Mean(),
+			1000*stats.Headers.StdDev(),
+			1000*stats.Headers.Quantiles[0.05],
+			1000*stats.Headers.Quantiles[0.95],
 		)
 		if hammer.ReadBody {
 			fmt.Fprintf(
 				statsFile,
 				"%f\t%f\t%f\t%f\n",
-				1000*stats.BodyStats.Mean(),
-				1000*stats.BodyStats.StdDev(),
-				1000*stats.BodyQuantile.Query(0.05),
-				1000*stats.BodyQuantile.Query(0.95),
+				1000*stats.Body.Mean(),
+				1000*stats.Body.StdDev(),
+				1000*stats.Body.Quantiles[0.05],
+				1000*stats.Body.Quantiles[0.95],
 			)
 		} else {
 			fmt.Fprintf(statsFile, "\n")
@@ -221,7 +257,7 @@ func (hammer *Hammer) StatsPrinter(filename string) func(Stats) {
 	}
 }
 
-func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Stats, wg *sync.WaitGroup) {
+func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- StatsSummary, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	statsMap := map[string]*Stats{}
@@ -231,7 +267,7 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 
 	defer func() {
 		for _, stats := range statsMap {
-			statschan <- *stats
+			statschan <- stats.Summarize(hammer.ReadBody)
 		}
 		close(statschan)
 	}()
@@ -275,7 +311,7 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 			}
 		case <-ticker.C:
 			for _, stats := range statsMap {
-				statschan <- *stats
+				statschan <- stats.Summarize(hammer.ReadBody)
 			}
 		}
 	}
@@ -319,7 +355,7 @@ func RandomURLGenerator(name string, URLs []string, Headers map[string][]string)
 	}
 }
 
-func (hammer *Hammer) Run(statschan chan<- Stats) {
+func (hammer *Hammer) Run(statschan chan<- StatsSummary) {
 	exit := make(chan int)
 	var requestWorkers, finishedResults sync.WaitGroup
 

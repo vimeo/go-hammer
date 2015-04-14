@@ -53,14 +53,14 @@ func main() {
 			LogErrors:        group.LogErrors,
 			GenerateFunction: hammer.RandomURLGenerator(groupName, group.URLs, group.Headers),
 		}
-		statschan := make(chan hammer.Stats)
+		statschan := make(chan hammer.StatsSummary)
 		printReport := h.ReportPrinter("hammer-report.%s")
 		printStats := h.StatsPrinter("stats")
 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var stats hammer.Stats
+			var stats hammer.StatsSummary
 			for stats = range statschan {
 				printReport(stats)
 			}
