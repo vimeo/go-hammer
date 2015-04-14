@@ -20,6 +20,7 @@ type RequestCallback func(*http.Response, Result)
 type Request struct {
 	HTTPRequest *http.Request
 	Name        string
+	ReadBody    bool
 	Callback    RequestCallback
 }
 
@@ -30,7 +31,6 @@ type Hammer struct {
 	Threads          int
 	Backlog          int
 	QPS              float64
-	ReadBody         bool
 	LogErrors        bool
 	GenerateFunction RequestGenerator
 }
@@ -74,15 +74,16 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Resul
 					logOut, err := ioutil.TempFile(".", "error.log.")
 					if err == nil {
 						res.Write(logOut)
+						result.GotBody = time.Now()
 					} else {
 						hammer.warnf("%s writing error log\n", err.Error())
 					}
-				} else if hammer.ReadBody {
+				} else if req.ReadBody {
 					io.Copy(ioutil.Discard, res.Body)
+					result.GotBody = time.Now()
 				}
-				result.GotBody = time.Now()
 				hammer.warnf("Got status %s for %s\n", res.Status, req.HTTPRequest.URL.String())
-			} else if hammer.ReadBody {
+			} else if req.ReadBody {
 				io.Copy(ioutil.Discard, res.Body)
 				result.GotBody = time.Now()
 			} else {
@@ -134,7 +135,7 @@ func newStats(name string, quantiles ...float64) *Stats {
 	}
 }
 
-func (stats *Stats) Summarize(body bool) (summary StatsSummary) {
+func (stats *Stats) Summarize() (summary StatsSummary) {
 	summary.Name = stats.Name
 	summary.Begin = stats.Begin
 	summary.End = stats.End
@@ -144,8 +145,8 @@ func (stats *Stats) Summarize(body bool) (summary StatsSummary) {
 	for _, quantile := range stats.Quantiles {
 		summary.Headers.Quantiles[quantile] = stats.HeaderQuantile.Query(quantile)
 	}
-	if body {
-		summary.Body.BasicStats = stats.BodyStats
+	summary.Body.BasicStats = stats.BodyStats
+	if stats.BodyStats.Count > 0 {
 		summary.Body.Quantiles = make(map[float64]float64, len(stats.Quantiles))
 		for _, quantile := range stats.Quantiles {
 			summary.Body.Quantiles[quantile] = stats.BodyQuantile.Query(quantile)
@@ -199,7 +200,7 @@ Status totals:
 				1000*stats.Headers.Quantiles[0.05],
 				1000*stats.Headers.Quantiles[0.95],
 			)
-			if hammer.ReadBody {
+			if stats.Body.Count > 0 {
 				fmt.Fprintf(
 					file,
 					"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
@@ -241,7 +242,7 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 			1000*stats.Headers.Quantiles[0.05],
 			1000*stats.Headers.Quantiles[0.95],
 		)
-		if hammer.ReadBody {
+		if stats.Body.Count > 0 {
 			fmt.Fprintf(
 				statsFile,
 				"%f\t%f\t%f\t%f\n",
@@ -267,7 +268,7 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 
 	defer func() {
 		for _, stats := range statsMap {
-			statschan <- stats.Summarize(hammer.ReadBody)
+			statschan <- stats.Summarize()
 		}
 		close(statschan)
 	}()
@@ -292,7 +293,7 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 			dur := end.Sub(start).Seconds()
 			stats.HeaderStats.Add(dur)
 			stats.HeaderQuantile.Insert(dur)
-			if hammer.ReadBody {
+			if res.GotBody != (time.Time{}) {
 				end = res.GotBody
 				dur := end.Sub(start).Seconds()
 				stats.BodyStats.Add(dur)
@@ -311,13 +312,13 @@ func (hammer *Hammer) collectResults(results <-chan Result, statschan chan<- Sta
 			}
 		case <-ticker.C:
 			for _, stats := range statsMap {
-				statschan <- stats.Summarize(hammer.ReadBody)
+				statschan <- stats.Summarize()
 			}
 		}
 	}
 }
 
-func RandomURLGenerator(name string, URLs []string, Headers map[string][]string) RequestGenerator {
+func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[string][]string) RequestGenerator {
 	readiedRequests := make([]Request, len(URLs))
 	for i, url := range URLs {
 		req, err := http.NewRequest("GET", url, nil)
@@ -326,6 +327,7 @@ func RandomURLGenerator(name string, URLs []string, Headers map[string][]string)
 		}
 		req.Header = Headers
 		readiedRequests[i] = Request{
+			ReadBody:    readBody,
 			HTTPRequest: req,
 			Name:        name,
 		}

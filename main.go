@@ -49,9 +49,8 @@ func main() {
 			Threads:          group.Threads,
 			Backlog:          group.Backlog,
 			QPS:              group.QPS,
-			ReadBody:         group.ReadBody,
 			LogErrors:        group.LogErrors,
-			GenerateFunction: hammer.RandomURLGenerator(groupName, group.URLs, group.Headers),
+			GenerateFunction: hammer.RandomURLGenerator(groupName, group.ReadBody, group.URLs, group.Headers),
 		}
 		statschan := make(chan hammer.StatsSummary)
 		printReport := h.ReportPrinter("hammer-report.%s")
