@@ -267,6 +267,7 @@ func RandomURLGenerator(URLs []string, Headers map[string][]string) RequestGener
 		req.Header = Headers
 		readiedRequests[i] = req
 	}
+	num := len(readiedRequests)
 
 	return func(hammer *Hammer, requests chan<- Request, exit <-chan int) {
 		defer func() { close(requests) }()
@@ -279,8 +280,13 @@ func RandomURLGenerator(URLs []string, Headers map[string][]string) RequestGener
 			case <-exit:
 				return
 			case <-ticker.C:
-				req := readiedRequests[rand.Intn(len(readiedRequests))]
-				requests <- req
+				var idx int
+				if num == 1 {
+					idx = 0
+				} else {
+					idx = rand.Intn(len(readiedRequests))
+				}
+				requests <- readiedRequests[idx]
 			}
 		}
 	}
