@@ -15,7 +15,7 @@ import (
 	"github.com/bmizerany/perks/quantile"
 )
 
-type RequestCallback func(*http.Response, Result)
+type RequestCallback func(Request, *http.Response, Result)
 
 type Request struct {
 	HTTPRequest *http.Request
@@ -91,7 +91,7 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- Resul
 			}
 		}
 		if req.Callback != nil {
-			go req.Callback(res, result)
+			go req.Callback(req, res, result)
 		}
 		results <- result
 	}
