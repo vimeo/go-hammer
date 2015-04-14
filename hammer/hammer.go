@@ -70,7 +70,10 @@ func (hammer *Hammer) sendRequests(requests <-chan Request, results chan<- resul
 					} else {
 						hammer.warnf("%s writing error log\n", err.Error())
 					}
+				} else if hammer.ReadBody {
+					io.Copy(ioutil.Discard, res.Body)
 				}
+				result.GotBody = time.Now()
 				hammer.warnf("Got status %s for %s\n", res.Status, req.URL.String())
 			} else if hammer.ReadBody {
 				io.Copy(ioutil.Discard, res.Body)
