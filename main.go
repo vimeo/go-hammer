@@ -1,73 +1,88 @@
 package main
 
 import (
-	"io/ioutil"
+	"fmt"
 	"os"
+	"regexp"
 	"runtime"
 	"sync"
 
 	"github.com/arodland/go-hammer/hammer"
-	"gopkg.in/yaml.v2"
+	"github.com/droundy/goopt"
 )
 
-type Config struct {
-	RunFor float64 `yaml:"run_for"`
-	Groups map[string]Group
-}
+var threads = goopt.Int([]string{"-T", "--threads"}, 4, "number of request threads")
+var runFor = goopt.Int([]string{"-t", "--time", "--run-for"}, 60, "runtime in seconds")
+var backlog = goopt.Int([]string{"-b", "--backlog"}, 10, "request backlog size")
+var qps = goopt.Int([]string{"-r", "--rate"}, 10, "rumber of requests/second to send")
+var urls = goopt.Strings([]string{"-u", "--url"}, "URL", "specify URLs to request")
+var headerOpt = goopt.Strings([]string{"-h", "--header"}, "header", "specify headers to send with requests")
 
-type Group struct {
-	Threads   int
-	Backlog   int
-	QPS       float64
-	URLs      []string
-	Headers   map[string][]string
-	ReadBody  bool
-	LogErrors bool
-}
+var skipBody = goopt.Flag(
+	[]string{"--no-read-body"},
+	[]string{"--read-body"},
+	"Close the connection without reading the request body; don't measure the time to read the body.",
+	"Time the request body.",
+)
 
-func LoadConfig() (config Config, err error) {
-	configFile, err := os.Open("hammer.yaml")
-	if err != nil {
-		return
-	}
-	configYaml, err := ioutil.ReadAll(configFile)
-	if err != nil {
-		return
-	}
-	err = yaml.Unmarshal(configYaml, &config)
-	return
-}
+var logErrors = goopt.Flag(
+	[]string{"--log-errors"},
+	[]string{"--no-log-errors"},
+	"Log all server error responses to disk.",
+	"Don't log error responses.",
+)
 
 func main() {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	config, _ := LoadConfig()
-	var wg sync.WaitGroup
 
-	for groupName, group := range config.Groups {
-		h := hammer.Hammer{
-			RunFor:           config.RunFor,
-			Threads:          group.Threads,
-			Backlog:          group.Backlog,
-			QPS:              group.QPS,
-			LogErrors:        group.LogErrors,
-			GenerateFunction: hammer.RandomURLGenerator(groupName, group.ReadBody, group.URLs, group.Headers),
-		}
-		statschan := make(chan hammer.StatsSummary)
-		printReport := h.ReportPrinter("hammer-report.%s")
-		printStats := h.StatsPrinter("stats")
+	goopt.Parse(nil)
 
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var stats hammer.StatsSummary
-			for stats = range statschan {
-				printReport(stats)
-			}
-			printReport(stats)
-			printStats(stats)
-		}()
+	*urls = append(*urls, goopt.Args...)
 
-		go h.Run(statschan)
+	if len(*urls) == 0 {
+		fmt.Print(goopt.Help())
+		return
 	}
+
+	var headers map[string][]string
+
+	colon := regexp.MustCompile(`\s*:\s*`)
+	for _, header := range *headerOpt {
+		parts := colon.Split(header, 2)
+		if headers[parts[0]] == nil {
+			headers[parts[0]] = []string{parts[1]}
+		} else {
+			headers[parts[0]] = append(headers[parts[0]], parts[1])
+		}
+	}
+
+	generator := hammer.RandomURLGenerator(
+		"hammer",
+		!*skipBody,
+		*urls,
+		headers,
+	)
+
+	h := hammer.Hammer{
+		RunFor:           float64(*runFor),
+		Threads:          *threads,
+		Backlog:          *backlog,
+		QPS:              float64(*qps),
+		LogErrors:        *logErrors,
+		GenerateFunction: generator,
+	}
+
+	statschan := make(chan hammer.StatsSummary)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		var stats hammer.StatsSummary
+		for stats = range statschan {
+		}
+		stats.PrintReport(os.Stdout)
+		wg.Done()
+	}()
+
+	h.Run(statschan)
 	wg.Wait()
 }
