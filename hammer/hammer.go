@@ -71,7 +71,6 @@ func (hammer *Hammer) sendRequests() {
 		result.GotHeaders = time.Now()
 		if err != nil {
 			result.Status = 499
-			result.GotBody = result.GotHeaders
 			hammer.warn(err.Error())
 		} else {
 			result.Status = res.StatusCode
