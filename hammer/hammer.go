@@ -282,7 +282,7 @@ func (hammer *Hammer) collectResults() {
 
 			stats, statsExisted := statsMap[res.Name]
 			if !statsExisted {
-				stats = newStats(res.Name, 0.05, 0.95)
+				stats = newStats(res.Name, 0.05, 0.5, 0.95)
 				statsMap[res.Name] = stats
 			}
 
@@ -353,27 +353,29 @@ Hits/sec: %.3f
 	if count > 0 {
 		fmt.Fprintf(
 			w,
-			"\nFirst byte mean +/- SD: %.2f +/- %.2f ms\n",
+			"\nFirst byte mean +/- std. dev.: %.2f +/- %.2f ms\n",
 			1000*stats.Headers.Mean(),
 			1000*stats.Headers.StdDev(),
 		)
 		fmt.Fprintf(
 			w,
-			"First byte 5-95 pct: (%.2f, %.2f) ms\n",
+			"First byte quantiles: (%.2f, %.2f, %.2f) ms\n",
 			1000*stats.Headers.Quantiles[0.05],
+			1000*stats.Headers.Quantiles[0.5],
 			1000*stats.Headers.Quantiles[0.95],
 		)
 		if stats.Body.Count > 0 {
 			fmt.Fprintf(
 				w,
-				"\nFull response mean +/- SD: %.2f +/- %.2f ms\n",
+				"\nFull response mean +/- std. dev.: %.2f +/- %.2f ms\n",
 				1000*stats.Body.Mean(),
 				1000*stats.Body.StdDev(),
 			)
 			fmt.Fprintf(
 				w,
-				"Full response 5-95 pct: (%.2f, %.2f) ms\n",
+				"Full response quantiles: (%.2f, %.2f, %.2f) ms\n",
 				1000*stats.Body.Quantiles[0.05],
+				1000*stats.Body.Quantiles[0.5],
 				1000*stats.Body.Quantiles[0.95],
 			)
 		}
@@ -404,7 +406,7 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 		count := stats.Headers.Count
 		fmt.Fprintf(
 			statsFile,
-			"%s\t%d\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f",
+			"%s\t%d\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f\t%f",
 			stats.Name,
 			hammer.Threads,
 			hammer.QPS,
@@ -414,15 +416,17 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 			1000*stats.Headers.Mean(),
 			1000*stats.Headers.StdDev(),
 			1000*stats.Headers.Quantiles[0.05],
+			1000*stats.Headers.Quantiles[0.5],
 			1000*stats.Headers.Quantiles[0.95],
 		)
 		if stats.Body.Count > 0 {
 			fmt.Fprintf(
 				statsFile,
-				"%f\t%f\t%f\t%f\t%.0f\t%.0f\n",
+				"%f\t%f\t%f\t%f\t%f\t%.0f\t%.0f\n",
 				1000*stats.Body.Mean(),
 				1000*stats.Body.StdDev(),
 				1000*stats.Body.Quantiles[0.05],
+				1000*stats.Body.Quantiles[0.5],
 				1000*stats.Body.Quantiles[0.95],
 				stats.Bytes,
 				stats.Bytes/runTime,
