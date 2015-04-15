@@ -1,6 +1,7 @@
 package hammer
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -40,18 +41,26 @@ func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
 	log.Printf(fmt, args...)
 }
 
+type BodyBehavior int
+
+const (
+	IgnoreBody BodyBehavior = iota
+	DiscardBody
+	CopyBody
+)
+
 type Request struct {
-	HTTPRequest *http.Request
-	Name        string
-	ReadBody    bool
-	Callback    RequestCallback
+	HTTPRequest  *http.Request
+	Name         string
+	BodyBehavior BodyBehavior
+	Callback     RequestCallback
 }
 
 type RequestCallback func(Request, *http.Response, Result)
 
 type RequestGenerator func(*Hammer)
 
-func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[string][]string) RequestGenerator {
+func RandomURLGenerator(name string, bb BodyBehavior, URLs []string, Headers map[string][]string) RequestGenerator {
 	readiedRequests := make([]Request, len(URLs))
 	for i, url := range URLs {
 		req, err := http.NewRequest("GET", url, nil)
@@ -60,9 +69,9 @@ func RandomURLGenerator(name string, readBody bool, URLs []string, Headers map[s
 		}
 		req.Header = Headers
 		readiedRequests[i] = Request{
-			ReadBody:    readBody,
-			HTTPRequest: req,
-			Name:        name,
+			BodyBehavior: bb,
+			HTTPRequest:  req,
+			Name:         name,
 		}
 	}
 	num := len(readiedRequests)
@@ -119,6 +128,14 @@ type Result struct {
 	GotBody    time.Time
 }
 
+func copyResponseBody(res *http.Response) (gotBody time.Time) {
+	var buf bytes.Buffer
+	io.Copy(&buf, res.Body)
+	gotBody = time.Now()
+	res.Body = ioutil.NopCloser(bytes.NewReader(buf.Bytes()))
+	return
+}
+
 func (hammer *Hammer) sendRequests() {
 	defer hammer.requestWorkers.Done()
 
@@ -136,6 +153,9 @@ func (hammer *Hammer) sendRequests() {
 		} else {
 			result.Status = res.StatusCode
 			if result.Status >= 400 {
+				if req.BodyBehavior == CopyBody {
+					result.GotBody = copyResponseBody(res)
+				}
 				if hammer.LogErrors {
 					// TODO: refactor this into a method
 					logOut, err := ioutil.TempFile(".", "error.log.")
@@ -145,12 +165,14 @@ func (hammer *Hammer) sendRequests() {
 					} else {
 						hammer.warnf("%s writing error log\n", err.Error())
 					}
-				} else if req.ReadBody {
+				} else if req.BodyBehavior == DiscardBody {
 					io.Copy(ioutil.Discard, res.Body)
 					result.GotBody = time.Now()
 				}
 				hammer.warnf("Got status %s for %s\n", res.Status, req.HTTPRequest.URL.String())
-			} else if req.ReadBody {
+			} else if req.BodyBehavior == CopyBody {
+				result.GotBody = copyResponseBody(res)
+			} else if req.BodyBehavior == DiscardBody {
 				io.Copy(ioutil.Discard, res.Body)
 				result.GotBody = time.Now()
 			} else {
