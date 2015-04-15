@@ -24,7 +24,7 @@ type Hammer struct {
 	QPS              float64
 	LogErrors        bool
 	GenerateFunction RequestGenerator
-	exit             chan int
+	Exit             chan int
 	exited           bool
 	requests         chan Request
 	throttled        chan Request
@@ -91,7 +91,7 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 
 		for {
 			select {
-			case <-hammer.exit:
+			case <-hammer.Exit:
 				return
 			default:
 				var idx int
@@ -125,7 +125,7 @@ func (hammer *Hammer) throttle() {
 
 	for {
 		select {
-		case <-hammer.exit:
+		case <-hammer.Exit:
 			return
 		case <-ticker.C:
 			req := <-hammer.requests
@@ -424,7 +424,7 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 }
 
 func (hammer *Hammer) Run(statschan chan StatsSummary) {
-	hammer.exit = make(chan int)
+	hammer.Exit = make(chan int)
 	hammer.requests = make(chan Request)
 	hammer.throttled = make(chan Request, hammer.Backlog)
 	hammer.results = make(chan Result, hammer.Threads*2)
@@ -447,6 +447,6 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	time.Sleep(time.Duration(hammer.RunFor * float64(time.Second)))
 	// And then signal GenerateRequests to stop.
 	hammer.exited = true
-	close(hammer.exit)
+	close(hammer.Exit)
 	hammer.finishedResults.Wait()
 }
