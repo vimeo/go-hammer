@@ -25,8 +25,7 @@ type Hammer struct {
 	LogErrors        bool
 	GenerateFunction RequestGenerator
 	Exit             chan int
-	exited           bool
-	requests         chan Request
+	Requests         chan Request
 	throttled        chan Request
 	results          chan Result
 	stats            chan StatsSummary
@@ -87,7 +86,7 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 	num := len(readiedRequests)
 
 	return func(hammer *Hammer) {
-		defer func() { close(hammer.requests) }()
+		defer func() { close(hammer.Requests) }()
 
 		for {
 			select {
@@ -100,22 +99,18 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 				} else {
 					idx = rand.Intn(len(readiedRequests))
 				}
-				hammer.requests <- readiedRequests[idx]
+				hammer.Requests <- readiedRequests[idx]
 			}
 		}
 	}
 }
 
 func (hammer *Hammer) SendRequest(req Request) {
-	if !hammer.exited {
-		hammer.requests <- req
-	}
+	hammer.Requests <- req
 }
 
 func (hammer *Hammer) SendRequestImmediately(req Request) {
-	if !hammer.exited {
-		hammer.throttled <- req
-	}
+	hammer.throttled <- req
 }
 
 func (hammer *Hammer) throttle() {
@@ -125,10 +120,11 @@ func (hammer *Hammer) throttle() {
 
 	for {
 		select {
-		case <-hammer.Exit:
-			return
 		case <-ticker.C:
-			req := <-hammer.requests
+			req, ok := <-hammer.Requests
+			if !ok {
+				return
+			}
 			hammer.throttled <- req
 		}
 	}
@@ -425,7 +421,7 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 
 func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	hammer.Exit = make(chan int)
-	hammer.requests = make(chan Request)
+	hammer.Requests = make(chan Request)
 	hammer.throttled = make(chan Request, hammer.Backlog)
 	hammer.results = make(chan Result, hammer.Threads*2)
 	hammer.stats = statschan
@@ -446,7 +442,6 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	// Give it time to run...
 	time.Sleep(time.Duration(hammer.RunFor * float64(time.Second)))
 	// And then signal GenerateRequests to stop.
-	hammer.exited = true
 	close(hammer.Exit)
 	hammer.finishedResults.Wait()
 }
