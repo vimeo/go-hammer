@@ -60,20 +60,17 @@ func main() {
 		}
 	}
 
-	var bb hammer.BodyBehavior
-	if *skipBody {
-		bb = hammer.IgnoreBody
-	} else {
-		bb = hammer.DiscardBody
+	opts := hammer.RandomURLGeneratorOptions{
+		URLs:    *urls,
+		Headers: headers,
+		Name:    *name,
 	}
-
-	generator := hammer.RandomURLGenerator(
-		*name,
-		bb,
-		*urls,
-		headers,
-		nil,
-	)
+	if *skipBody {
+		opts.BodyBehavior = hammer.IgnoreBody
+	} else {
+		opts.BodyBehavior = hammer.DiscardBody
+	}
+	generator := hammer.RandomURLGenerator(opts)
 
 	h := hammer.Hammer{
 		RunFor:           float64(*runFor),

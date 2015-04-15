@@ -60,19 +60,27 @@ type RequestCallback func(Request, *http.Response, Result)
 
 type RequestGenerator func(*Hammer)
 
-func RandomURLGenerator(name string, bb BodyBehavior, urls []string, headers map[string][]string, callback RequestCallback) RequestGenerator {
-	readiedRequests := make([]Request, len(urls))
-	for i, url := range urls {
+type RandomURLGeneratorOptions struct {
+	URLs         []string
+	Headers      map[string][]string
+	Name         string
+	BodyBehavior BodyBehavior
+	Callback     RequestCallback
+}
+
+func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
+	readiedRequests := make([]Request, len(opts.URLs))
+	for i, url := range opts.URLs {
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			panic(err)
 		}
-		req.Header = headers
+		req.Header = opts.Headers
 		readiedRequests[i] = Request{
-			BodyBehavior: bb,
+			BodyBehavior: opts.BodyBehavior,
 			HTTPRequest:  req,
-			Name:         name,
-			Callback:     callback,
+			Name:         opts.Name,
+			Callback:     opts.Callback,
 		}
 	}
 	num := len(readiedRequests)
