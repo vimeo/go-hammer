@@ -72,6 +72,7 @@ func main() {
 		bb,
 		*urls,
 		headers,
+		nil,
 	)
 
 	h := hammer.Hammer{
