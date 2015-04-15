@@ -25,6 +25,7 @@ type Hammer struct {
 	LogErrors        bool
 	GenerateFunction RequestGenerator
 	exit             chan int
+	exited           bool
 	requests         chan Request
 	throttled        chan Request
 	results          chan Result
@@ -106,11 +107,15 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 }
 
 func (hammer *Hammer) SendRequest(req Request) {
-	hammer.requests <- req
+	if !hammer.exited {
+		hammer.requests <- req
+	}
 }
 
 func (hammer *Hammer) SendRequestImmediately(req Request) {
-	hammer.throttled <- req
+	if !hammer.exited {
+		hammer.throttled <- req
+	}
 }
 
 func (hammer *Hammer) throttle() {
@@ -441,6 +446,7 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	// Give it time to run...
 	time.Sleep(time.Duration(hammer.RunFor * float64(time.Second)))
 	// And then signal GenerateRequests to stop.
+	hammer.exited = true
 	close(hammer.exit)
 	hammer.finishedResults.Wait()
 }
