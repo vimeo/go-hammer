@@ -372,7 +372,7 @@ Hits/sec: %.3f
 			)
 			fmt.Fprintf(
 				w,
-				"First byte 5-95 pct: (%.2f, %.2f) ms\n",
+				"Full response 5-95 pct: (%.2f, %.2f) ms\n",
 				1000*stats.Body.Quantiles[0.05],
 				1000*stats.Body.Quantiles[0.95],
 			)
