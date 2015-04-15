@@ -136,11 +136,12 @@ type Result struct {
 	Start      time.Time
 	GotHeaders time.Time
 	GotBody    time.Time
+	BodySize   int64
 }
 
-func copyResponseBody(res *http.Response) (gotBody time.Time) {
+func copyResponseBody(res *http.Response) (gotBody time.Time, size int64) {
 	var buf bytes.Buffer
-	io.Copy(&buf, res.Body)
+	size, _ = io.Copy(&buf, res.Body)
 	gotBody = time.Now()
 	res.Body = ioutil.NopCloser(bytes.NewReader(buf.Bytes()))
 	return
@@ -164,7 +165,7 @@ func (hammer *Hammer) sendRequests() {
 			result.Status = res.StatusCode
 			if result.Status >= 400 {
 				if req.BodyBehavior == CopyBody {
-					result.GotBody = copyResponseBody(res)
+					result.GotBody, result.BodySize = copyResponseBody(res)
 				}
 				if hammer.LogErrors {
 					// TODO: refactor this into a method
@@ -176,14 +177,14 @@ func (hammer *Hammer) sendRequests() {
 						hammer.warnf("%s writing error log\n", err.Error())
 					}
 				} else if req.BodyBehavior == DiscardBody {
-					io.Copy(ioutil.Discard, res.Body)
+					result.BodySize, _ = io.Copy(ioutil.Discard, res.Body)
 					result.GotBody = time.Now()
 				}
 				hammer.warnf("Got status %s for %s\n", res.Status, req.HTTPRequest.URL.String())
 			} else if req.BodyBehavior == CopyBody {
-				result.GotBody = copyResponseBody(res)
+				result.GotBody, result.BodySize = copyResponseBody(res)
 			} else if req.BodyBehavior == DiscardBody {
-				io.Copy(ioutil.Discard, res.Body)
+				result.BodySize, _ = io.Copy(ioutil.Discard, res.Body)
 				result.GotBody = time.Now()
 			} else {
 				res.Body.Close()
@@ -206,6 +207,7 @@ type Stats struct {
 	HeaderQuantile quantile.Stream
 	BodyStats      descriptivestats.Stats
 	BodyQuantile   quantile.Stream
+	Bytes          float64
 }
 
 type SingleStatSummary struct {
@@ -220,6 +222,7 @@ type StatsSummary struct {
 	Statuses map[int]int
 	Headers  SingleStatSummary
 	Body     SingleStatSummary
+	Bytes    float64
 }
 
 func newStats(name string, quantiles ...float64) *Stats {
@@ -239,6 +242,7 @@ func (stats *Stats) Summarize() (summary StatsSummary) {
 	summary.Begin = stats.Begin
 	summary.End = stats.End
 	summary.Statuses = stats.Statuses
+	summary.Bytes = stats.Bytes
 	summary.Headers.Stats = stats.HeaderStats
 	summary.Headers.Quantiles = make(map[float64]float64, len(stats.Quantiles))
 	for _, quantile := range stats.Quantiles {
@@ -283,6 +287,7 @@ func (hammer *Hammer) collectResults() {
 			}
 
 			stats.Statuses[res.Status]++
+			stats.Bytes += float64(res.BodySize)
 
 			start := res.Start
 			end := res.GotHeaders
@@ -322,13 +327,21 @@ func (stats *StatsSummary) PrintReport(w io.Writer) {
 		`Run time: %.3f
 Total hits: %.0f
 Hits/sec: %.3f
-
-Status totals:
 `,
 		runTime,
 		count,
 		count/runTime,
 	)
+	if stats.Body.Count > 0 {
+		fmt.Fprintf(
+			w,
+			"Total bytes: %0.f\nBytes/sec: %.0f\n",
+			stats.Bytes,
+			stats.Bytes/runTime,
+		)
+	}
+
+	fmt.Fprintf(w, "\nStatus totals:\n")
 	statusCodes := []int{}
 	for code, _ := range stats.Statuses {
 		statusCodes = append(statusCodes, code)
@@ -406,11 +419,13 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 		if stats.Body.Count > 0 {
 			fmt.Fprintf(
 				statsFile,
-				"%f\t%f\t%f\t%f\n",
+				"%f\t%f\t%f\t%f\t%.0f\t%.0f\n",
 				1000*stats.Body.Mean(),
 				1000*stats.Body.StdDev(),
 				1000*stats.Body.Quantiles[0.05],
 				1000*stats.Body.Quantiles[0.95],
+				stats.Bytes,
+				stats.Bytes/runTime,
 			)
 		} else {
 			fmt.Fprintf(statsFile, "\n")
