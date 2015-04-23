@@ -226,7 +226,7 @@ type StatsSummary struct {
 }
 
 func newStats(name string, quantiles ...float64) *Stats {
-	return &Stats{
+	stats := Stats{
 		Name:           name,
 		Quantiles:      quantiles,
 		Statuses:       make(map[int]int),
@@ -235,6 +235,9 @@ func newStats(name string, quantiles ...float64) *Stats {
 		BodyStats:      descriptivestats.Stats{},
 		BodyQuantile:   *(quantile.NewTargeted(quantiles...)),
 	}
+	stats.HeaderQuantile.SetEpsilon(0.001)
+	stats.BodyQuantile.SetEpsilon(0.001)
+	return &stats
 }
 
 func (stats *Stats) Summarize() (summary StatsSummary) {
