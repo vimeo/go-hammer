@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -385,9 +386,18 @@ Hits/sec: %.3f
 	}
 }
 
+func qualifyFilename(format string, stats StatsSummary) string {
+	if !strings.Contains(format, "*") {
+		return format
+	}
+	format = strings.Replace(format, "%", "%%", -1)
+	format = strings.Replace(format, "*", "%s", 1)
+	return fmt.Sprintf(format, stats.Name)
+}
+
 func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
 	return func(stats StatsSummary) {
-		w, err := os.Create(fmt.Sprintf(format, stats.Name))
+		w, err := os.Create(qualifyFilename(format, stats))
 		if err != nil {
 			hammer.warn(err.Error())
 			return
@@ -398,9 +408,13 @@ func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
 	}
 }
 
-func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
+func (hammer *Hammer) StatsPrinter(format string) func(StatsSummary) {
 	return func(stats StatsSummary) {
-		statsFile, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0666)
+		statsFile, err := os.OpenFile(
+			qualifyFilename(format, stats),
+			os.O_WRONLY|os.O_CREATE|os.O_APPEND,
+			0666,
+		)
 		if err != nil {
 			hammer.warn(err.Error())
 			return
