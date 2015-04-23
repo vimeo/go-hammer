@@ -26,7 +26,7 @@ type Hammer struct {
 	LogErrors        bool
 	GenerateFunction RequestGenerator
 	Exit             chan int
-	Requests         chan Request
+	requests         chan Request
 	throttled        chan Request
 	results          chan Result
 	stats            chan StatsSummary
@@ -59,7 +59,7 @@ type Request struct {
 
 type RequestCallback func(Request, *http.Response, Result)
 
-type RequestGenerator func(*Hammer)
+type RequestGenerator func(*Hammer, chan<- Request)
 
 type RandomURLGeneratorOptions struct {
 	URLs         []string
@@ -86,8 +86,8 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 	}
 	num := len(readiedRequests)
 
-	return func(hammer *Hammer) {
-		defer func() { close(hammer.Requests) }()
+	return func(hammer *Hammer, requests chan<- Request) {
+		defer func() { close(requests) }()
 
 		for {
 			select {
@@ -100,14 +100,14 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 				} else {
 					idx = rand.Intn(len(readiedRequests))
 				}
-				hammer.Requests <- readiedRequests[idx]
+				requests <- readiedRequests[idx]
 			}
 		}
 	}
 }
 
 func (hammer *Hammer) SendRequest(req Request) {
-	hammer.Requests <- req
+	hammer.requests <- req
 }
 
 func (hammer *Hammer) SendRequestImmediately(req Request) {
@@ -122,7 +122,7 @@ func (hammer *Hammer) throttle() {
 	for {
 		select {
 		case <-ticker.C:
-			req, ok := <-hammer.Requests
+			req, ok := <-hammer.requests
 			if !ok {
 				return
 			}
@@ -461,7 +461,7 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	}
 
 	hammer.Exit = make(chan int)
-	hammer.Requests = make(chan Request)
+	hammer.requests = make(chan Request)
 	hammer.throttled = make(chan Request, hammer.Backlog)
 	hammer.results = make(chan Result, hammer.Threads*2)
 	hammer.stats = statschan
@@ -473,7 +473,7 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	hammer.finishedResults.Add(1)
 	go hammer.collectResults()
 	go hammer.throttle()
-	go hammer.GenerateFunction(hammer)
+	go hammer.GenerateFunction(hammer, hammer.requests)
 	go func() {
 		hammer.requestWorkers.Wait()
 		close(hammer.results)
