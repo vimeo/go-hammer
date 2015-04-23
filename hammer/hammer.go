@@ -442,6 +442,10 @@ func (hammer *Hammer) StatsPrinter(filename string) func(StatsSummary) {
 }
 
 func (hammer *Hammer) Run(statschan chan StatsSummary) {
+	if hammer.Backlog == 0 {
+		hammer.Backlog = hammer.Threads
+	}
+
 	hammer.Exit = make(chan int)
 	hammer.Requests = make(chan Request)
 	hammer.throttled = make(chan Request, hammer.Backlog)
