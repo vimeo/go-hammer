@@ -1,3 +1,13 @@
+/*
+Hammer is a utilility for load-testing HTTP servers. It attempts to combine
+high performance with flexibility. It is available as a CLI tool, "hammer",
+and as a library for more advanced tasks. Read on for description of the
+library.
+
+WARNING
+
+The library interface is subject to change as the design is refined.
+*/
 package hammer
 
 import (
@@ -18,20 +28,36 @@ import (
 	"github.com/bmizerany/perks/quantile"
 )
 
+// Hammer is the main type that coordinates several goroutines to send
+// requests and collect results.
 type Hammer struct {
-	RunFor           float64
-	Threads          int
-	Backlog          int
-	QPS              float64
-	LogErrors        bool
+	// Runtime in seconds. TODO: maximum number of requests instead.
+	RunFor float64
+	// Number of goroutines to send requests / maximum number of parallel
+	// requests.
+	Threads int
+	// The backlog is a queue of requests between the request rate throttler
+	// and the requesting threads, ready to be sent immediately. If the
+	// requesting threads are unable to send requests at the desired rate,
+	// the backlog will fill up. Later, if possible, requests will be sent
+	// as fast as possible until the backlog is empty. The backlog can help
+	// smooth over network or server hiccups, but too large a backlog can
+	// result in large request spikes.
+	Backlog int
+	// The number of requests per second to generate.
+	QPS float64
+	// Whether to log all error responses received from the server to file.
+	LogErrors bool
+	// Request generation function
 	GenerateFunction RequestGenerator
-	Exit             chan int
-	requests         chan Request
-	throttled        chan Request
-	results          chan Result
-	stats            chan StatsSummary
-	requestWorkers   sync.WaitGroup
-	finishedResults  sync.WaitGroup
+	// close(hammer.Exit) to signal the request generator to end.
+	Exit            chan int
+	requests        chan Request
+	throttled       chan Request
+	results         chan Result
+	stats           chan StatsSummary
+	requestWorkers  sync.WaitGroup
+	finishedResults sync.WaitGroup
 }
 
 func (hammer *Hammer) warn(msg string) {
@@ -45,30 +71,55 @@ func (hammer *Hammer) warnf(fmt string, args ...interface{}) {
 type BodyBehavior int
 
 const (
+	// Don't read the response body at all.
 	IgnoreBody BodyBehavior = iota
+	// Read the response body and time it, but discard it.
 	DiscardBody
+	// Read the response body and replace it with a bytes.Reader so that it
+	// can be read again by a callback.
 	CopyBody
 )
 
 type Request struct {
-	HTTPRequest  *http.Request
-	Name         string
+	// HTTP request to be sent.
+	HTTPRequest *http.Request
+	// Name will end up in the eventual Result and Stats objects, and report
+	// output.
+	Name string
+	// How to dispose of the response body.
 	BodyBehavior BodyBehavior
-	Callback     RequestCallback
+	// If non-nil, will be called with the result of this request.
+	Callback RequestCallback
 }
 
+// RequestCallback is called as the result of a successful Request. It
+// receives the original request, an http.Response (with the Body replaced
+// by a bytes.Reader if the Request had CopyBody), and the Result containing
+// timings. A RequestCallback may call SendRequest or SendRequestImmediately
+// to generate more requests.
 type RequestCallback func(Request, *http.Response, Result)
 
+// RequestGenerators should generate and send requests on the provided
+// channel, and they should exit if the Hammer's Exit channel is closed.
 type RequestGenerator func(*Hammer, chan<- Request)
 
 type RandomURLGeneratorOptions struct {
-	URLs         []string
-	Headers      map[string][]string
-	Name         string
+	// URLs to send requests to.
+	URLs []string
+	// Headers to be added to all outgoing requests.
+	Headers map[string][]string
+	// The name to be used for all outgoing requests.
+	Name string
+	// BodyBehavior for all outgoing requests.
 	BodyBehavior BodyBehavior
-	Callback     RequestCallback
+	// Callback for all outgoing requests.
+	Callback RequestCallback
 }
 
+// RandomURLGenerator returns a RequestGenerator that will send GET requests
+// to all of the URLs in a list, in random order. It's suitable for use to
+// hit a single URL as well, and in that case it won't consume any random
+// numbers.
 func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 	readiedRequests := make([]Request, len(opts.URLs))
 	for i, url := range opts.URLs {
@@ -106,10 +157,20 @@ func RandomURLGenerator(opts RandomURLGeneratorOptions) RequestGenerator {
 	}
 }
 
+// TODO: what we're really looking for here is probably more like separate
+// rate limiters than one big rate limiter that can be bypassed. That way we
+// could limit *both* the rate of primary requests and subsidiary requests
+// in that scenario, instead of counting on limiting one to limit the other.
+
+// Send a Request and record the statistics for it. The Request will be
+// counted for rate-limiting purposes and will be sent when the rate-limiter
+// allows.
 func (hammer *Hammer) SendRequest(req Request) {
 	hammer.requests <- req
 }
 
+// Send a Request and record the statistics for it. The Request will be sent
+// immediately and will not count for rate-limiting purposes.
 func (hammer *Hammer) SendRequestImmediately(req Request) {
 	hammer.throttled <- req
 }
@@ -132,12 +193,17 @@ func (hammer *Hammer) throttle() {
 }
 
 type Result struct {
-	Name       string
-	Status     int
-	Start      time.Time
+	Name string
+	// HTTP status code.
+	Status int
+	// Time at the beginning of the request.
+	Start time.Time
+	// Time after receiving the response headers, before receiving the body.
 	GotHeaders time.Time
-	GotBody    time.Time
-	BodySize   int64
+	// Time after receiving the entire response body.
+	GotBody time.Time
+	// Body size in bytes.
+	BodySize int64
 }
 
 func copyResponseBody(res *http.Response) (gotBody time.Time, size int64) {
@@ -455,6 +521,9 @@ func (hammer *Hammer) StatsPrinter(format string) func(StatsSummary) {
 	}
 }
 
+// Run will set a Hammer in motion, producing StatsSummary values on the
+// provided channel. Closes the channel after all responses are received,
+// all stats are tabulated, and a final StatsSummary is sent out.
 func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	if hammer.Backlog == 0 {
 		hammer.Backlog = hammer.Threads
