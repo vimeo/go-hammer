@@ -96,8 +96,8 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/arodland/go-hammer/hammer"
 	"github.com/droundy/goopt"
+	"github.com/vimeo/go-hammer/hammer"
 )
 
 var threads = goopt.Int([]string{"-T", "--threads"}, 4, "number of request threads")
