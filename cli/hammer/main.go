@@ -92,9 +92,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"regexp"
 	"runtime"
 	"sync"
+	"syscall"
 
 	"github.com/droundy/goopt"
 	"github.com/vimeo/go-hammer/hammer"
@@ -185,8 +187,9 @@ func main() {
 	wg.Add(1)
 	var percentDone int
 
+	var stats hammer.StatsSummary
+
 	go func() {
-		var stats hammer.StatsSummary
 		for stats = range statschan {
 			if reportPrinter != nil {
 				reportPrinter(stats)
@@ -206,6 +209,27 @@ func main() {
 		wg.Done()
 	}()
 
+	go func() {
+		interrupt := make(chan os.Signal, 1)
+		justPrint := make(chan os.Signal, 1)
+		signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM)
+		signal.Notify(justPrint, syscall.SIGQUIT, syscall.SIGUSR1)
+		for {
+			select {
+			case <-justPrint:
+				stats.PrintReport(os.Stdout)
+			case <-interrupt:
+				if reportPrinter != nil {
+					reportPrinter(stats)
+				}
+				if statsPrinter != nil {
+					statsPrinter(stats)
+				}
+				stats.PrintReport(os.Stdout)
+				os.Exit(1)
+			}
+		}
+	}()
 	h.Run(statschan)
 	wg.Wait()
 }
