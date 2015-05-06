@@ -531,7 +531,6 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 
 	hammer.Exit = make(chan int)
 	hammer.requests = make(chan Request)
-	hammer.throttled = make(chan Request, hammer.Backlog)
 	hammer.results = make(chan Result, hammer.Threads*2)
 	hammer.stats = statschan
 
@@ -541,7 +540,12 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	}
 	hammer.finishedResults.Add(1)
 	go hammer.collectResults()
-	go hammer.throttle()
+	if hammer.QPS > 0 {
+		hammer.throttled = make(chan Request, hammer.Backlog)
+		go hammer.throttle()
+	} else {
+		hammer.throttled = hammer.requests
+	}
 	go hammer.GenerateFunction(hammer, hammer.requests)
 	go func() {
 		hammer.requestWorkers.Wait()
