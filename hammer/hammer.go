@@ -534,18 +534,19 @@ func (hammer *Hammer) Run(statschan chan StatsSummary) {
 	hammer.results = make(chan Result, hammer.Threads*2)
 	hammer.stats = statschan
 
-	for i := 0; i < hammer.Threads; i++ {
-		hammer.requestWorkers.Add(1)
-		go hammer.sendRequests()
-	}
-	hammer.finishedResults.Add(1)
-	go hammer.collectResults()
 	if hammer.QPS > 0 {
 		hammer.throttled = make(chan Request, hammer.Backlog)
 		go hammer.throttle()
 	} else {
 		hammer.throttled = hammer.requests
 	}
+
+	for i := 0; i < hammer.Threads; i++ {
+		hammer.requestWorkers.Add(1)
+		go hammer.sendRequests()
+	}
+	hammer.finishedResults.Add(1)
+	go hammer.collectResults()
 	go hammer.GenerateFunction(hammer, hammer.requests)
 	go func() {
 		hammer.requestWorkers.Wait()
