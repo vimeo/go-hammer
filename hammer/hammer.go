@@ -283,6 +283,10 @@ type SingleStatSummary struct {
 	Quantiles map[float64]float64
 }
 
+func (s *SingleStatSummary) Quantile(q int) float64 {
+    return s.Quantiles[float64(q) / 100]
+}
+
 type StatsSummary struct {
 	Name     string
 	Begin    time.Time
@@ -388,6 +392,39 @@ func (hammer *Hammer) collectResults() {
 			}
 		}
 	}
+}
+
+var DefaultReportTemplate = `Run time: {{ .Runtime | printf "%.3f"
+Total hits: {{ .Headers.Count | printf "%.0f" }}
+Hits/sec: {{ .HitsPerSec | printf "%.3f" }}
+{{ if .Body.Count }}
+Total bytes: {{ .Bytes | printf "%.0f" }}
+Bytes/sec: {{ .BytesPerSec | printf "%.3f" }}
+{{ if .Statuses }}
+
+Status totals:
+{{ range $code, $count := .Statuses }}
+{{ $code }} {{ $count }}    {{ percent $count .Headers.Count }}
+{{ end }}
+{{ if .Headers.Count }}
+
+First byte mean +/- std. dev.: {{ .Headers.Mean | msec }} +/- {{ .Headers.StdDev | msec }}
+First byte quantiles: ({{ .Headers.Quantile 5 | msec }}, {{ .Headers.Quantile 50 | msec }}, {{ .Headers.Quantile 95 | msec }})
+{{ end }}
+{{ if .Body.Count }}
+
+Full response mean +/- std. dev.: {{ .Headers.Mean | msec }} +/- {{ .Headers.StdDev | msec }}
+Full response quantiles: ({{ .Headers.Quantile 5 | msec }}, {{ .Headers.Quantile 50 | msec }}, {{ .Headers.Quantile 95 | msec }})
+{{end}}
+`
+
+var TemplateFunctions = map[string]interface{}{
+    "percent": func(numerator, denominator float64) string {
+        return fmt.Sprintf("%.3f", 100 * numerator / denominator)
+    },
+    "msec": func(sec float64) string {
+        return fmt.Sprintf("%.2f", 1000 * sec)
+    },
 }
 
 func (stats *StatsSummary) PrintReport(w io.Writer) {
