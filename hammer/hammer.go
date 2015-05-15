@@ -238,6 +238,7 @@ func (hammer *Hammer) sendRequests() {
 					// TODO: refactor this into a method
 					logOut, err := ioutil.TempFile(".", "error.log.")
 					if err == nil {
+						req.HTTPRequest.Write(logOut)
 						res.Write(logOut)
 						result.GotBody = time.Now()
 					} else {
