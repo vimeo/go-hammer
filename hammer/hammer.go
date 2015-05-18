@@ -469,9 +469,9 @@ func (hammer *Hammer) ReportPrinter(format string) func(StatsSummary) {
 			hammer.warn(err.Error())
 			return
 		}
+		defer w.Close()
 		fmt.Fprintf(w, "HAMMER REPORT FOR %s\n\n", stats.Name)
 		stats.PrintReport(w)
-		w.Close()
 	}
 }
 
@@ -486,6 +486,7 @@ func (hammer *Hammer) StatsPrinter(format string) func(StatsSummary) {
 			hammer.warn(err.Error())
 			return
 		}
+		defer statsFile.Close()
 		runTime := stats.End.Sub(stats.Begin).Seconds()
 		count := stats.Headers.Count
 		fmt.Fprintf(
@@ -518,7 +519,6 @@ func (hammer *Hammer) StatsPrinter(format string) func(StatsSummary) {
 		} else {
 			fmt.Fprintf(statsFile, "\n")
 		}
-		statsFile.Close()
 	}
 }
 
